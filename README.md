@@ -135,7 +135,182 @@ buscar(valorDigitado: string): Observable<Item[]> {
       tap(resultado => console.log('Fluxo após o map', resultado))
     )
   }
-
 ```
 
+### Busca Typeahead
 
+É comum implementar buscas dinâmicas conforme o usuário vai digitando a informação. Isto é chamado de busca typeahed (digitação antecipada).
+Será feito uma refatoração no código para implantarmos este recurso e utilizarmos outros operadores do RxJS para otimizar estas buscas.
+Ao trocar o método chamado no botão (método click) para o input (método keyup), a busca é feita a cada letra digitada, gerando muitas requisições á API.
+Por isso, será utilizada outar abordagem onde a busca só e feita uma vez assim que o usuário deixa de digitar.
+Para isso utilizaremos um formControl para para referenciar o campo de busca da aplicação:
+
+```typescript
+...
+campoBusca = new FormControl()
+...
+livrosEncontrados$ = this.campoBusca.valueChanges.pip()
+```
+
+```html
+<input
+    type="search"
+    [formControl]="campoBusca"
+>
+<button>
+  <img src="assets/imagens/icone-busca.png" alt="Lupa de cor roxa">
+</button>
+```
+
+Observe que foi utilizado o símbolo de cifrão ($) no final da variável livrosEncontrados. 
+Esta prática é adotada no Angular quando a variável é do tipo **Observable**, já que o formControl retorna um observable.
+Como o valueChanges retorna um Observable, podemos utilizar os operadores do RxJS para manipular essas informações, então usaremos o método pipe().
+
+
+### Operador switchMap
+
+Agora precisamos modificar o campo de busca, e para isso usaremos o operador **switchMap()**. 
+Este operador é responsável por fazer uma transformação, porém, diferentemente do map(), o switchMap() cancela todas as requisições anteriores.
+A ideia desse operador é trocar os valores e passar ao servidor só o último valor, desconsiderando os valores anteriores.
+Ainda usaremos o método map() para fazermos a transformação dos dados como era feito no buscarLivros().
+
+```typescript
+livrosEncontrados$ = this.campoBusca.valueChanges.pipe(
+    switchMap(valorDigitado => this.service.buscar(valorDigitado)),
+    map(items => this.listaLivros = this.livrosResultadoParaLivros(items))
+)
+```
+
+Como livrosEncontrados$ é um observable, é necessário se inscrever nele. Para fazer isso diretamente no template, é possível utilizar o **Pipe Async** do Angular.
+O **Pipe Async** possui os métodos subscriber (inscrever) e unsubscriber (desinscrever).
+
+```html
+<!-- Você pode utilizar de duas maneiras: Assim... -->
+<div *ngIf="livrosEncontrados | async, else telaInicial">...</div>
+
+<!-- ou assim... -->
+<div *ngIf="livrosEncontrados$ | async as listaLivros, else telaInicial">...</div>
+```
+
+Quando o componente for encerrado, o **| async** fará o usubscriber automaticamente, sem precisarmos nos preocupar com isso.
+
+Assim, o código-fonte final do componente não precisará mais se preocupar com o usubscriber, podendo ser refatorado para isto:
+
+```typescript
+import { Component} from '@angular/core';
+import { FormControl } from '@angular/forms';
+import { map, switchMap } from 'rxjs';
+import { Item, Livro } from 'src/app/models/interfaces';
+import { LivroVolumeInfo } from 'src/app/models/livroVolumeInfo';
+import { LivroService } from 'src/app/service/livro.service';
+
+@Component({
+  selector: 'app-lista-livros',
+  templateUrl: './lista-livros.component.html',
+  styleUrls: ['./lista-livros.component.css']
+})
+export class ListaLivrosComponent {
+  
+  campoBusca = new FormControl()  
+
+  constructor(private service: LivroService) { }
+
+  livrosEncontrados$ = this.campoBusca.valueChanges
+    .pipe(
+        switchMap(valorDigitado => this.service.buscar(valorDigitado)),
+        map(items => this.livrosResultadoParaLivros(items))
+    )  
+
+  livrosResultadoParaLivros(items: Item[]): LivroVolumeInfo[] {
+    return items.map(item => {
+      return new LivroVolumeInfo(item)
+    })
+  }
+}
+```
+
+### Operadores filter e debounceTime
+
+Até este momento, se o usuário digitar apenas uma letra no campo de busca, a aplicação fará a busca pela letra "a", trazendo um resultado muito genérico.
+Pensando nisso, podemos otimizar ainda mais essa busca usando o RxJS e diminuindo ainda mais o número de requisições feitas ao servidor.
+Para isso utilizaremos um operador RxJS chamado **filter**, que é similar ao método filter, que utilizamos no JavaScript, onde passamos uma condição que, se for satisfeita, o fluxo segue.
+Precisamos escrever o operador antes do switchMap() porque, nesse caso, a ordem dos operadores influencia, alterando o resultado. 
+
+```typescript
+  livrosEncontrados$ = this.campoBusca.valueChanges
+    .pipe(
+        filter(valorDigitado => valorDigitado.length >= 3),
+        switchMap(valorDigitado => this.service.buscar(valorDigitado)),
+        map(items => this.livrosResultadoParaLivros(items))
+    ) 
+  
+}
+```
+
+Perceba que se o usuário demorar para digitar a palavra, buscas intermediárias será realizadas trazendo resultados que não é o que o usuário quer. 
+Isso ocorre porque o delay para cancelar uma requisição é muito pequeno. O RxJS possui um operador para manipularmos este delay da requisição, o **DebounceTime**
+
+```typescript
+  livrosEncontrados$ = this.campoBusca.valueChanges
+    .pipe(
+        debounceTime(3000), // parâmetro em milissegundos
+        filter(valorDigitado => valorDigitado.length >= 3),
+        switchMap(valorDigitado => this.service.buscar(valorDigitado)),
+        map(items => this.livrosResultadoParaLivros(items))
+    ) 
+  
+}
+```
+
+## Lidando com erros no RxJS
+
+O RxJS possui operadores que auxiliam nas tarefas relacionadas a tratamento de erros. São elas: **catchError** e **throwError**.
+O operador ***catchError()*** é responsável por capturar erros na aplicação (se houver). Ele espera receber entre seus parênteses um parâmetro erro.
+O catchError() não emite valores, apenas o captura. Por isso, precisamos nos inscrever em outro Observable, o ***throwError()***. 
+O throwError() retorna um novo Observable que emite imediatamente o erro e encerra o seu ciclo de vida.
+
+```typescript
+  mensagemErro = '';
+  ...
+  livrosEncontrados$ = this.campoBusca.valueChanges
+    .pipe(
+        debounceTime(3000),
+        filter(valorDigitado => valorDigitado.length >= 3),
+        switchMap(valorDigitado => this.service.buscar(valorDigitado)),
+        map(items => this.livrosResultadoParaLivros(items)),
+        catchError(erro => {
+            console.log(erro)
+            return throwError(() => new Error(this.mensagemErro = 'Ops, ocorreu um erro. Recarregue a aplicação!'))
+        })
+    )   
+}
+```
+
+```html  
+  <div class="resultados mensagem-erro" *ngIf="mensagemErro">
+      {{ mensagemErro }}
+  </div>
+}
+```
+
+Outra abordagem possível caso não precise da mensgaem de texto retornada pela busca na API:
+
+```typescript
+  mensagemErro = '';
+  ...
+  livrosEncontrados$ = this.campoBusca.valueChanges
+    .pipe(
+        debounceTime(3000),
+        filter(valorDigitado => valorDigitado.length >= 3),
+        switchMap(valorDigitado => this.service.buscar(valorDigitado)),
+        map(items => this.livrosResultadoParaLivros(items)),
+        catchError(() => {
+          this.mensagemErro = 'Ops, ocorreu um erro. Recarregue a aplicação!'
+          return EMPTY              
+        })
+    )   
+}
+```
+
+O **EMPTY** cria um Observable simples que não emite nenhum item para o Observer e que emite imediatamente uma notificação de "Complete" para encerrar o seu ciclo de vida. 
+Por esse motivo é necessário recarregar a aplicação quando esse erro ocorre. Vimos que os métodos error e complete encerram o ciclo de vida do Observable. O mesmo ocorre com o catchError.
