@@ -74,6 +74,7 @@
 
 .imagem {
   height: 18rem;
+  min-width: 198px;
   grid-area: imagem;
   padding-top: 1rem;
 }
